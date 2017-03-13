@@ -156,6 +156,7 @@ public class ExportManager
 
         @Override
         public void run() {
+            int permits = m_onGenerationDrainedForTruncation.availablePermits();
             /*
              * Do all the work to switch to a new generation in the thread for the processor
              * of the old generation
@@ -163,7 +164,7 @@ public class ExportManager
             ExportManager instance = instance();
             synchronized (instance) {
                 if (m_generationGhosts.contains(m_generation)) {
-                    exportLog.info("Generation already drained: " + m_generation);
+                    exportLog.info("Generation already drained: " + m_generation + " permits " + permits);
                     return;
                 }
             }
@@ -196,6 +197,7 @@ public class ExportManager
         ExportDataProcessor oldProcessor = null;
         boolean installNewProcessor = false;
         ExportManager instance = instance();
+        int availableDrainPermits = m_onGenerationDrainedForTruncation.availablePermits();
         synchronized (instance) {
             if (m_generations.containsValue(drainedGeneration)) {
                 m_generations.remove(drainedGeneration.m_timestamp);
@@ -203,10 +205,10 @@ public class ExportManager
                 //If I am draining current generation create new processor. Otherwise its just older on disk generations
                 // that are getting drained.
                 installNewProcessor = (m_processor.get().getExportGeneration() == drainedGeneration);
-                exportLog.info("Finished draining generation " + drainedGeneration.m_timestamp);
+                exportLog.info("Finished draining generation " + drainedGeneration.m_timestamp + " permits " + availableDrainPermits);
             } else {
                 installNewProcessor = false;
-                exportLog.warn("Finished draining a generation that is not known to export generations.");
+                exportLog.warn("Finished draining a generation " + drainedGeneration.m_timestamp + " that is not known to export generations. permits " + availableDrainPermits);
             }
 
             try {
@@ -229,6 +231,7 @@ public class ExportManager
                     }
 
                     if (!nextGeneration.isContinueingGeneration()) {
+                        exportLog.info("Generation ROLLOVER: not a continuing generation " + nextGeneration);
                         /*
                          * Changes in partition count can make the load balancing strategy not capture
                          * all partitions for data that was from a previously larger cluster.
@@ -237,6 +240,7 @@ public class ExportManager
                          */
                         nextGeneration.kickOffLeaderElection(m_messenger);
                     } else {
+                        exportLog.info("Generation ROLLOVER:  continuing generation " + nextGeneration);
                         /*
                          * This strategy is the one that piggy backs on
                          * regular partition mastership distribution to determine
@@ -337,7 +341,12 @@ public class ExportManager
         if (gen != null && gen.isContinueingGeneration()) {
             gen.acceptMastershipTask(partitionId);
         } else {
-            exportLog.info("Failed to run accept mastership tasks for partition: " + partitionId);
+            if (gen == null) {
+                exportLog.info("Failed to run accept mastership tasks for partition: " + partitionId);
+            } else {
+                exportLog.info("Failed to run accept mastership tasks for generation " + gen.m_timestamp +
+                        " partition (not a continuing generation): " + partitionId);
+            }
         }
     }
 
@@ -461,6 +470,7 @@ public class ExportManager
              */
             if (startup) {
                 if (!m_generations.containsKey(catalogContext.m_uniqueId)) {
+                    exportLog.info("createInitialExportProcessor new generation for catalog" + catalogContext.m_uniqueId);
                     final ExportGeneration currentGeneration = new ExportGeneration(
                             catalogContext.m_uniqueId,
                             exportOverflowDirectory, isRejoin);
@@ -550,6 +560,7 @@ public class ExportManager
             generation.setGenerationDrainRunnable(new GenerationDrainRunnable(generation));
 
             if (generation.initializeGenerationFromDisk(connectors, m_messenger)) {
+                exportLog.info("Created generation from disk: " + generation.m_timestamp);
                 m_generations.put( generation.m_timestamp, generation);
             } else {
                 String list[] = generationDirectory.list();
@@ -638,6 +649,7 @@ public class ExportManager
         final int numOfReplicas = catalogContext.getDeployment().getCluster().getKfactor();
 
         ExportGeneration newGeneration = null;
+        exportLog.info("UAC create new generation: " + catalogContext.m_uniqueId);
         try {
             newGeneration = new ExportGeneration(catalogContext.m_uniqueId, exportOverflowDirectory, false);
             newGeneration.setGenerationDrainRunnable(new GenerationDrainRunnable(newGeneration));
@@ -741,16 +753,28 @@ public class ExportManager
     }
 
     public void truncateExportToTxnId(long snapshotTxnId, long[] perPartitionTxnIds) {
-        exportLog.info("Truncating export data after txnId " + snapshotTxnId);
+        StringBuilder msgBuilder = new StringBuilder(" ");
+        for (long partitionTxIDs : perPartitionTxnIds) {
+            msgBuilder.append(partitionTxIDs + " ");
+        }
+
+        int availablePermits = m_onGenerationDrainedForTruncation.availablePermits();
+        exportLog.info("Truncating export data after txnId " + snapshotTxnId + " permits " + availablePermits);
         for (ExportGeneration generation : m_generations.values()) {
             //If the generation was completely drained, wait for the task to finish running
             //by waiting for the permit that will be generated
+            availablePermits = m_onGenerationDrainedForTruncation.availablePermits();
+            exportLog.info("Generation: " + generation.m_timestamp + " permits " + availablePermits +
+                    " \npartitions " + msgBuilder.toString());
             if (generation.truncateExportToTxnId(snapshotTxnId, perPartitionTxnIds)) {
                 try {
                     m_onGenerationDrainedForTruncation.acquire();
+                    exportLog.info("GENERATION FULLY TRUNCATED " + generation.m_timestamp);
                 } catch (InterruptedException e) {
                     VoltDB.crashLocalVoltDB("Interrupted truncating export data", true, e);
                 }
+            } else {
+                exportLog.info("GENERATION NOT FULLY TRUNCATED " + generation.m_timestamp );
             }
         }
     }

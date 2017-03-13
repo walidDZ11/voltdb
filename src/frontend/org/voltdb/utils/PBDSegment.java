@@ -175,7 +175,13 @@ public abstract class PBDSegment {
      * @throws IOException
      */
     int parseAndTruncate(BinaryDeque.BinaryDequeTruncator truncator) throws IOException {
-        if (!m_closed) throw new IOException(("Segment should not be open before truncation"));
+        if (!m_closed) {
+            boolean finishedReading = hasAllFinishedReading();
+            String msg = "Segement " + segmentId() + " file " + file().getName() + "is open. "
+                    + "Segment should not be open before truncation. "
+                    + "hasAllFinishedReading " + finishedReading;
+            throw new IOException(msg);
+        }
 
         openForWrite(false);
         PBDSegmentReader reader = openForRead(TRUNCATOR_CURSOR);

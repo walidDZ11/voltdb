@@ -23,6 +23,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Iterator;
 
+import org.voltcore.logging.Level;
 import org.voltcore.logging.VoltLogger;
 import org.voltcore.utils.DBBPool.BBContainer;
 import org.voltdb.utils.BinaryDeque;
@@ -61,6 +62,7 @@ public class StreamBlockQueue {
     private final BinaryDequeReader m_reader;
 
     public StreamBlockQueue(String path, String nonce) throws java.io.IOException {
+        exportLog.setLevel(Level.DEBUG);
         m_persistentDeque = new PersistentBinaryDeque( nonce, new VoltFile(path), exportLog);
         m_nonce = nonce;
         m_reader = m_persistentDeque.openForRead(m_nonce);
@@ -275,48 +277,48 @@ public class StreamBlockQueue {
         assert(m_memoryDeque.isEmpty());
         m_persistentDeque.parseAndTruncate(new BinaryDequeTruncator() {
 
-        @Override
-        public TruncatorResponse parse(BBContainer bbc) {
-            ByteBuffer b = bbc.b();
-            b.order(ByteOrder.LITTLE_ENDIAN);
-            try {
-                b.position(b.position() + 8);//Don't need the USO
-                while (b.hasRemaining()) {
-                    int rowLength = b.getInt();
-                    b.position(b.position() + nullArrayLength);
-                    long rowTxnId = b.getLong();
-                    exportLog.trace("Evaluating row with txnId " + rowTxnId + " for truncation");
-                    if (rowTxnId > txnId) {
-                        exportLog.debug(
-                                "Export stream " + m_nonce + " found export data to truncate at txn " + rowTxnId);
-                        //The txnid of this row is the greater then the truncation txnid.
-                        //Don't want this row, but want to preserve all rows before it.
-                        //Move back before the row length prefix and txnId
-                        b.position(b.position() - (12 + nullArrayLength));
+            @Override
+            public TruncatorResponse parse(BBContainer bbc) {
+                ByteBuffer b = bbc.b();
+                b.order(ByteOrder.LITTLE_ENDIAN);
+                try {
+                    b.position(b.position() + 8);//Don't need the USO
+                    while (b.hasRemaining()) {
+                        int rowLength = b.getInt();
+                        b.position(b.position() + nullArrayLength);
+                        long rowTxnId = b.getLong();
+                        exportLog.info("Evaluating row with txnId " + rowTxnId + " for truncation");
+                        if (rowTxnId > txnId) {
+                            exportLog.info(
+                                    "Export stream " + m_nonce + " found export data to truncate at txn " + rowTxnId);
+                            //The txnid of this row is the greater then the truncation txnid.
+                            //Don't want this row, but want to preserve all rows before it.
+                            //Move back before the row length prefix and txnId
+                            b.position(b.position() - (12 + nullArrayLength));
 
-                        //If the truncation point was the first row in the block, the entire block is to be discard
-                        //We know it is the first row if the position before the row is after the uso (8 bytes)
-                        if (b.position() == 8) {
-                            return PersistentBinaryDeque.fullTruncateResponse();
+                            //If the truncation point was the first row in the block, the entire block is to be discard
+                            //We know it is the first row if the position before the row is after the uso (8 bytes)
+                            if (b.position() == 8) {
+                                return PersistentBinaryDeque.fullTruncateResponse();
+                            } else {
+                                //Return everything in the block before the truncation point.
+                                //Indicate this is the end of the interesting data.
+                                b.limit(b.position());
+                                b.position(0);
+                                return new ByteBufferTruncatorResponse(b);
+                            }
                         } else {
-                            //Return everything in the block before the truncation point.
-                            //Indicate this is the end of the interesting data.
-                            b.limit(b.position());
-                            b.position(0);
-                            return new ByteBufferTruncatorResponse(b);
+                            //Not the row we are looking to truncate at. Skip past it keeping in mind
+                            //we read the first 8 bytes for the txn id, and the null array which
+                            //is included in the length prefix
+                            b.position(b.position() + (rowLength - (8 + nullArrayLength)));
                         }
-                    } else {
-                        //Not the row we are looking to truncate at. Skip past it keeping in mind
-                        //we read the first 8 bytes for the txn id, and the null array which
-                        //is included in the length prefix
-                        b.position(b.position() + (rowLength - (8 + nullArrayLength)));
                     }
+                } finally {
+                    b.order(ByteOrder.BIG_ENDIAN);
                 }
-            } finally {
-                b.order(ByteOrder.BIG_ENDIAN);
+                return null;
             }
-            return null;
-        }
         });
     }
 

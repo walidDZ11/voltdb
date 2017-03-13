@@ -327,7 +327,8 @@ public class PersistentBinaryDeque implements BinaryDeque {
                         try {
                             m_initializedFromExistingFiles = true;
                             if (deleteEmpty) {
-                                if (qs.getNumEntries() == 0) {
+                                int numberOfEntries = qs.getNumEntries();
+                                if (numberOfEntries == 0) {
                                     LOG.info("Found Empty Segment with entries: " + qs.getNumEntries() + " For: " + pathname.getName());
                                     if (m_usageSpecificLog.isDebugEnabled()) {
                                         m_usageSpecificLog.debug("Segment " + qs.file() + " has been closed and deleted during init");
@@ -392,6 +393,22 @@ public class PersistentBinaryDeque implements BinaryDeque {
 
         m_numObjects = countNumObjects();
         assertions();
+
+        StringBuilder msg = new StringBuilder("Segments: ");
+        boolean entries = false;
+        for (PBDSegment sgmt : m_segments.values()) {
+            if (entries) msg.append("\n");
+            msg.append(" id:" + sgmt.segmentId());
+            msg.append(" path:" + sgmt.file().getName());
+            msg.append(" isClosed:" + sgmt.isClosed());
+            msg.append(" entries:" + sgmt.getNumEntries());
+            entries = true;
+        }
+        if (entries) {
+            LOG.info(msg.toString() + "\nWrite segement id: " + writeSegmentIndex);
+        }
+//        LOG.info("PDB Segement for write: " + writeSegment.segmentId()
+//            + " file name " + writeSegment.file().getName() + " state isClosed: " + writeSegment.isClosed());
     }
 
     private int countNumObjects() throws IOException {
@@ -411,8 +428,28 @@ public class PersistentBinaryDeque implements BinaryDeque {
 
         assertions();
         if (m_segments.isEmpty()) {
+            LOG.info("PBD " + m_nonce + " has no finished segments");
             m_usageSpecificLog.debug("PBD " + m_nonce + " has no finished segments");
             return;
+        }
+
+        StringBuilder builder = new StringBuilder(" ");
+        int segementsOpen = 0;
+        for (PBDSegment segment : m_segments.values()) {
+            if (!segment.isClosed()) {
+                builder.append("\nSEGMENT STILL OPEN, segment id ");
+                builder.append(segment.segmentId());
+                builder.append(" file ");
+                builder.append(segment.file().getName());
+                builder.append(" m_nonce ");
+                builder.append(m_nonce);
+                builder.append("path");
+                builder.append(m_path);
+                ++segementsOpen;
+            }
+        }
+        if (segementsOpen > 0) {
+            builder.append(" # of open segments " + segementsOpen);
         }
 
         // Close the last write segment for now, will reopen after truncation
@@ -426,7 +463,12 @@ public class PersistentBinaryDeque implements BinaryDeque {
         for (PBDSegment segment : m_segments.values()) {
             final long segmentIndex = segment.segmentId();
 
-            final int truncatedEntries = segment.parseAndTruncate(truncator);
+            int truncatedEntries = 0;
+            try {
+                truncatedEntries = segment.parseAndTruncate(truncator);
+            } catch (IOException io) {
+                Throwables.propagate(io);
+            }
 
             if (truncatedEntries == -1) {
                 lastSegmentIndex = segmentIndex - 1;
@@ -707,6 +749,7 @@ public class PersistentBinaryDeque implements BinaryDeque {
             }
             catch (IOException e) {
                 // TODO ignore this for now, it is just the segment file failed to be closed
+                LOG.info( "FAILED to close the reader for cursor: " + reader.m_cursorId);
             }
         }
         // check all segments from latest to oldest (excluding the last write segment) to see if they can be deleted
@@ -721,6 +764,7 @@ public class PersistentBinaryDeque implements BinaryDeque {
             for (PBDSegment segment : m_segments.descendingMap().values()) {
                 // skip the last segment
                 if (isLastSegment) {
+                    LOG.info("Skipped closing segment" + segment.segmentId() + " closed: " + segment.isClosed());
                     isLastSegment = false;
                     continue;
                 }

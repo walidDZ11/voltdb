@@ -112,7 +112,7 @@ public class ExportDataSource implements Comparable<ExportDataSource> {
     private volatile ListeningExecutorService m_executor;
     private final Integer m_executorLock = new Integer(0);
     private final LinkedTransferQueue<RunnableWithES> m_queuedActions = new LinkedTransferQueue<>();
-    private RunnableWithES m_firstAction = null;
+    private RunnableWithES m_queuedTruncateTask = null;
 
     /**
      * Create a new data source.
@@ -200,6 +200,7 @@ public class ExportDataSource implements Comparable<ExportDataSource> {
         if (partitionColumn != null) {
             m_partitionColumnName = partitionColumn.getName();
         }
+        exportLog.setLevel(Level.DEBUG);
         File adFile = new VoltFile(overflowPath, nonce + ".ad");
         exportLog.info("Creating ad for " + nonce);
         byte jsonBytes[] = null;
@@ -530,7 +531,7 @@ public class ExportDataSource implements Comparable<ExportDataSource> {
                  * on the native side when this method returns
                  */
                 exportLog.info("Syncing first unpolled USO to " + uso + " for table "
-                        + m_tableName + " partition " + m_partitionId);
+                        + m_tableName + " partition " + m_partitionId + " sync "+ sync);
                 m_firstUnpolledUso = uso;
             }
         }
@@ -562,6 +563,7 @@ public class ExportDataSource implements Comparable<ExportDataSource> {
         if (es == null) {
             //If we have not activated lets get the buffer in overflow and dont poll
             try {
+                exportLog.debug("Get buffer from overflow USO: " + uso + " sync:" + sync + " endofstream:" + endOfStream);
                 pushExportBufferImpl(uso, buffer, sync, endOfStream, false);
             } catch (Throwable t) {
                 VoltDB.crashLocalVoltDB("Error pushing export  buffer", true, t);
@@ -602,7 +604,7 @@ public class ExportDataSource implements Comparable<ExportDataSource> {
         return m_generation;
     }
 
-    public ListenableFuture<?> truncateExportToTxnId(final long txnId) {
+    public ListenableFuture<?> truncateExportToTxnId(final ExportGeneration generation, final long txnId) {
         RunnableWithES runnable = new RunnableWithES("truncateExportToTxnId") {
             @Override
             public void run() {
@@ -617,7 +619,12 @@ public class ExportDataSource implements Comparable<ExportDataSource> {
                             m_onDrain.run();
                         }
                     }
-                } catch (Throwable t) {
+                }
+                catch (Throwable t) {
+                    exportLog.error("!!!! generation " + m_generation + " partionid: " + m_partitionId + " table name " + m_tableName
+                            + " Generation " + generation.m_timestamp + " path " + generation.m_directory.getName() +
+                            " continuing generation " + generation.isContinueingGeneration()
+                            + " on disk: " + generation.isDiskGeneration());
                     VoltDB.crashLocalVoltDB("Error while trying to truncate export to txnid " + txnId, true, t);
                 }
             }
@@ -663,6 +670,7 @@ public class ExportDataSource implements Comparable<ExportDataSource> {
             @Override
             public void run() {
                 try {
+                    exportLog.debug(" close and delete generation " + m_generation);
                     m_committedBuffers.closeAndDelete();
                     m_ackMailboxRefs.set(null);
                 } catch(IOException e) {
@@ -1016,7 +1024,7 @@ public class ExportDataSource implements Comparable<ExportDataSource> {
                         return Futures.immediateFuture(null);
                     }
                     if (setupTask) {
-                        m_firstAction = runnable;
+                        m_queuedTruncateTask = runnable;
                     } else {
                         m_queuedActions.add(runnable);
                     }
@@ -1029,6 +1037,7 @@ public class ExportDataSource implements Comparable<ExportDataSource> {
         runnable.setExecutorService(m_executor);
 
         if (m_executor.isShutdown()) {
+            exportLog.info("stash or submit task. shutdown " + m_generation + " " + m_tableName + " " + m_partitionId);
             return Futures.immediateFuture(null);
         }
         if (callExecute) {
@@ -1050,10 +1059,17 @@ public class ExportDataSource implements Comparable<ExportDataSource> {
                             "ExportDataSource gen " + m_generation
                             + " table " + m_tableName + " partition " + m_partitionId, 1);
                 //If we have a truncate task do that first.
-                if (m_firstAction != null) {
+                if (m_queuedTruncateTask != null) {
                     exportLog.info("Submitting truncate task for ExportDataSource gen " + m_generation
                             + " table " + m_tableName + " partition " + m_partitionId);
-                    es.submit(m_firstAction);
+                    try {
+                        es.submit(m_queuedTruncateTask).get();
+                    }
+                    catch (Exception e) {
+                        VoltDB.crashLocalVoltDB("Unable to truncate data.", true, e);
+                    }
+                    //m_queuedTruncateTask.run();
+                    m_queuedTruncateTask = null;
                 }
                 if (m_queuedActions.size()>0) {
                     for (RunnableWithES queuedR : m_queuedActions) {

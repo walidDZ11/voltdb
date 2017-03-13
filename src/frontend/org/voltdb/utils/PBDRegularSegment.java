@@ -30,8 +30,10 @@ import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Objects placed in the deque are stored in file segments that are up to 64 megabytes.
@@ -122,6 +124,7 @@ public class PBDRegularSegment extends PBDSegment {
         }
 
         if (m_closed) {
+            LOG.info("cursor " + cursorId + "opened for read: " + m_file.getAbsolutePath());
             open(false, false);
         }
         SegmentReader reader = new SegmentReader(cursorId);
@@ -222,9 +225,15 @@ public class PBDRegularSegment extends PBDSegment {
     }
 
     private void closeReadersAndFile() throws IOException {
+        StringBuilder builder = new StringBuilder(" ");
+        for (SegmentReader reader : m_readCursors.values()) {
+            builder.append(reader.toString() + " ");
+        }
+        LOG.info(m_readCursors.size() + " read cursors to be closed: " + builder.toString() + m_file.getAbsolutePath());
         m_readCursors.clear();
         try {
             if (m_ras != null) {
+                //LOG.info("ras " + m_ras.toString());
                 m_ras.close();
             }
         } finally {
@@ -356,6 +365,47 @@ public class PBDRegularSegment extends PBDSegment {
         return written;
     }
 
+    private String curorsInfo(Map<String, SegmentReader> cursors) throws IOException {
+        StringBuilder builder = new StringBuilder(" ");
+        if (!hasAllFinishedReading()) {
+            if (cursors.size() > 0) {
+                Set<String> keys = cursors.keySet();
+                builder.append("Keys: ");
+                for (String key : keys) {
+                    builder.append(key + ", ");
+                }
+                builder.append("\nReaders: ");
+                Collection<SegmentReader> readers = cursors.values();
+                for (SegmentReader reader : readers) {
+                    builder.append(reader.toString() + "\n");
+                }
+            }
+        }
+        return builder.toString();
+    }
+    @Override
+    int parseAndTruncate(BinaryDeque.BinaryDequeTruncator truncator) throws IOException {
+        int entriesTruncated = 0;
+        try {
+            entriesTruncated = super.parseAndTruncate(truncator);
+        } catch (IOException io) {
+            StringBuilder builder = new StringBuilder(" ");
+            if (!hasAllFinishedReading()) {
+                builder.append("\n\nReaderCursors\n\n");
+                if (m_readCursors.size() > 0) {
+                    builder.append(curorsInfo(m_readCursors));
+                }
+                builder.append("\n\nClosedCursors\n\n");
+                if (m_closedCursors.size() > 0) {
+                    builder.append(curorsInfo(m_closedCursors));
+                }
+            }
+            LOG.error(builder.toString());
+            throw io;
+        }
+        return entriesTruncated;
+    }
+
     private class SegmentReader implements PBDSegmentReader {
         private final String m_cursorId;
         private long m_readOffset = SEGMENT_HEADER_BYTES;
@@ -377,6 +427,13 @@ public class PBDRegularSegment extends PBDSegment {
             m_discardCount = 0;
         }
 
+        @Override
+        public String toString() {
+            return "cursor" + m_cursorId + " read index: " + m_objectReadIndex +
+                    " number of entries " + m_numOfEntries +
+                    " bytes read: " + m_bytesRead + " discard count : " + m_discardCount +
+                    " closed " + m_closed;
+        }
         @Override
         public boolean hasMoreEntries() throws IOException {
             return m_objectReadIndex < m_numOfEntries;

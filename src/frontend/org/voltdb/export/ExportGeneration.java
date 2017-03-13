@@ -109,6 +109,7 @@ public class ExportGeneration implements Generation {
             exportLog.info("Drained source in generation " + m_timestamp + " with " + numSourcesDrained + " of " + m_numSources + " drained");
             if (numSourcesDrained == m_numSources) {
                 if (m_partitionLeaderZKName.isEmpty()) {
+                    exportLog.info("Generation partition leader map empty, call on all source drained");
                     m_onAllSourcesDrained.run();
                 } else {
                     ListenableFuture<?> removeLeadership = m_childUpdatingThread.submit(new Runnable() {
@@ -118,6 +119,8 @@ public class ExportGeneration implements Generation {
                             // We need this null check for tests which TestExportGeneration without messenger.
                             if (messenger != null) {
                                 for (Map.Entry<Integer, String> entry : m_partitionLeaderZKName.entrySet()) {
+                                    exportLog.info("Generation partition delete entry " + m_leadersZKPath
+                                            + "/" + entry.getKey() + "/" + entry.getValue());
                                     messenger.getZK().delete(
                                             m_leadersZKPath + "/" + entry.getKey() + "/" + entry.getValue(),
                                             -1,
@@ -162,6 +165,9 @@ public class ExportGeneration implements Generation {
 
     //This is maintained to detect if this is a continueing generation or not
     private final boolean m_isContinueingGeneration;
+    private boolean m_isDiskGeneration = false;
+
+    boolean isDiskGeneration() { return m_isDiskGeneration; }
     /**
      * Constructor to create a new generation of export data
      * @param exportOverflowDirectory
@@ -173,8 +179,11 @@ public class ExportGeneration implements Generation {
         if (!m_directory.canWrite()) {
             if (!m_directory.mkdirs()) {
                 throw new IOException("Could not create " + m_directory + " Rejoin: " + isRejoin);
+            } else {
+                exportLog.info("Created export overflow directory " + m_directory.getName());
             }
         }
+        m_isDiskGeneration = false;
         m_isContinueingGeneration = true;
 
         exportLog.info("Creating new export generation " + m_timestamp + " Rejoin: " + isRejoin);
@@ -194,10 +203,12 @@ public class ExportGeneration implements Generation {
             throw new IOException("Invalid Generation directory, directory name must be a number.");
         }
 
+        m_isDiskGeneration = true;
         m_isContinueingGeneration = (catalogGen == m_timestamp);
     }
 
     //This checks if the on disk generation is a catalog generation.
+    @Override
     public boolean isContinueingGeneration() {
         return m_isContinueingGeneration;
     }
@@ -245,6 +256,7 @@ public class ExportGeneration implements Generation {
      * start consuming the export data.
      *
      */
+    @Override
     public void kickOffLeaderElection(final HostMessenger messenger) {
         m_childUpdatingThread.submit(new Runnable() {
             @Override
@@ -606,6 +618,7 @@ public class ExportGeneration implements Generation {
         };
     }
 
+    @Override
     public long getQueuedExportBytes(int partitionId, String signature) {
         //assert(m_dataSourcesByPartition.containsKey(partitionId));
         //assert(m_dataSourcesByPartition.get(partitionId).containsKey(delegateId));
@@ -720,6 +733,7 @@ public class ExportGeneration implements Generation {
         }
     }
 
+    @Override
     public void pushExportBuffer(int partitionId, String signature, long uso, ByteBuffer buffer, boolean sync, boolean endOfStream) {
         //        System.out.println("In generation " + m_timestamp + " partition " + partitionId + " signature " + signature + (buffer == null ? " null buffer " : (" buffer length " + buffer.remaining())));
         //        for (Integer i : m_dataSourcesByPartition.keySet()) {
@@ -791,6 +805,7 @@ public class ExportGeneration implements Generation {
     /*
      * Returns true if the generatino was completely truncated away
      */
+    @Override
     public boolean truncateExportToTxnId(long txnId, long[] perPartitionTxnIds) {
         // create an easy partitionId:txnId lookup.
         HashMap<Integer, Long> partitionToTxnId = new HashMap<Integer, Long>();
@@ -813,7 +828,10 @@ public class ExportGeneration implements Generation {
                 else {
                     //If this was drained and closed we may not have truncation point and we dont want to reopen PBDs
                     if (!source.isClosed()) {
-                        tasks.add(source.truncateExportToTxnId(truncationPoint));
+                        tasks.add(source.truncateExportToTxnId(this, truncationPoint));
+                    } else {
+                        exportLog.info("***source is closed; table name" + source.getTableName() + " partition id " + source.getPartitionId() +
+                                " generation " + source.getGeneration());
                     }
                 }
             }
@@ -826,6 +844,8 @@ public class ExportGeneration implements Generation {
                                     "You can back up export overflow data and start the " +
                                     "DB without it to get past this error", true, e);
         }
+        exportLog.info("Generation truncation to " + txnId + " completed. "
+                + "Sources drained: " + m_drainedSources.get() + " sources to drain: " + m_numSources);
 
         return m_drainedSources.get() == m_numSources;
     }
@@ -848,6 +868,7 @@ public class ExportGeneration implements Generation {
         }
     }
 
+    @Override
     public void close(final HostMessenger messenger) {
         List<ListenableFuture<?>> tasks = new ArrayList<ListenableFuture<?>>();
         for (Map<String, ExportDataSource> sources : m_dataSourcesByPartition.values()) {
@@ -872,6 +893,7 @@ public class ExportGeneration implements Generation {
      * mastership role for the given partition id
      * @param partitionId
      */
+    @Override
     public void acceptMastershipTask( int partitionId) {
         Map<String, ExportDataSource> partitionDataSourceMap = m_dataSourcesByPartition.get(partitionId);
 

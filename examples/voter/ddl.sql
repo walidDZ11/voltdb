@@ -40,6 +40,14 @@ CREATE TABLE votes
 
 PARTITION TABLE votes ON COLUMN phone_number;
 
+--CREATE STREAM card_alert_export PARTITION ON COLUMN card_id EXPORT TO TARGET default 
+CREATE STREAM stream_votes PARTITION ON COLUMN phone_number EXPORT TO TARGET default
+(
+  phone_number       bigint     NOT NULL
+, state              varchar(2) NOT NULL
+, contestant_number  integer    NOT NULL
+);
+
 -- Map of Area Codes and States for geolocation classification of incoming calls
 CREATE TABLE area_code_state
 (
