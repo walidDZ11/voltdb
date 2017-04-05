@@ -407,38 +407,43 @@ public class SocketJoiner {
      */
     private JSONObject readJSONObjFromWire(SocketChannel sc, String remoteAddressForErrorMsg) throws IOException, JSONException {
         // length prefix
-        ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
-        while (lengthBuffer.remaining() > 0) {
-            int read = sc.read(lengthBuffer);
-            if (read == -1) {
-                throw new EOFException(remoteAddressForErrorMsg);
+        try {
+            ByteBuffer lengthBuffer = ByteBuffer.allocate(4);
+            while (lengthBuffer.remaining() > 0) {
+                int read = sc.read(lengthBuffer);
+                if (read == -1) {
+                    throw new EOFException(remoteAddressForErrorMsg);
+                }
             }
-        }
-        lengthBuffer.flip();
-        int length = lengthBuffer.getInt();
+            lengthBuffer.flip();
+            int length = lengthBuffer.getInt();
 
-        // don't allow for a crazy unallocatable json payload
-        if (length > 16 * 1024) {
-            throw new IOException(
-                    "Length prefix on wire for expected JSON string is greater than 16K max.");
-        }
-        if (length < 2) {
-            throw new IOException(
-                    "Length prefix on wire for expected JSON string is less than minimum document size of 2.");
-        }
-
-        // content
-        ByteBuffer messageBytes = ByteBuffer.allocate(length);
-        while (messageBytes.hasRemaining()) {
-            int read = sc.read(messageBytes);
-            if (read == -1) {
-                throw new EOFException(remoteAddressForErrorMsg);
+            // don't allow for a crazy unallocatable json payload
+            if (length > 16 * 1024) {
+                throw new IOException(
+                        "Length prefix on wire for expected JSON string is greater than 16K max.");
             }
-        }
-        messageBytes.flip();
+            if (length < 2) {
+                throw new IOException(
+                        "Length prefix on wire for expected JSON string is less than minimum document size of 2.");
+            }
 
-        JSONObject jsObj = new JSONObject(new String(messageBytes.array(), StandardCharsets.UTF_8));
-        return jsObj;
+            // content
+            ByteBuffer messageBytes = ByteBuffer.allocate(length);
+            while (messageBytes.hasRemaining()) {
+                int read = sc.read(messageBytes);
+                if (read == -1) {
+                    throw new EOFException(remoteAddressForErrorMsg);
+                }
+            }
+            messageBytes.flip();
+
+            JSONObject jsObj = new JSONObject(new String(messageBytes.array(), StandardCharsets.UTF_8));
+            return jsObj;
+        } catch (IOException | JSONException ex) {
+            sc.close();
+            throw ex;
+        }
     }
 
     /*
