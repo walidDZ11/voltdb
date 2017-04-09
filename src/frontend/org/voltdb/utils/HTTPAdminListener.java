@@ -139,7 +139,7 @@ public class HTTPAdminListener {
         }
     }
 
-    //Somewhat like Filter but we dont have Filter in version and jars we use.
+    // Somewhat like Filter but we dont have Filter in version and jars we use.
     class VoltRequestHandler extends AbstractHandler {
         VoltLogger logger = new VoltLogger("HOST");
         private String m_hostHeader = null;
